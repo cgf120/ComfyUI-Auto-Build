@@ -430,6 +430,21 @@ def main() -> None:
     comfy_root = ensure_repo(comfy_root, "https://github.com/comfyanonymous/ComfyUI") if not comfy_root.exists() else comfy_root
     manager_root = ensure_repo(manager_root, "https://github.com/Comfy-Org/ComfyUI-Manager") if not manager_root.exists() else manager_root
 
+    required_manager_files = [
+        manager_root / "node_db" / "dev" / "extension-node-map.json",
+    ]
+    if not any(path.exists() for path in required_manager_files):
+        fallback_root = manager_root.parent / f"{manager_root.name}-download"
+        manager_root = ensure_repo(fallback_root, "https://github.com/Comfy-Org/ComfyUI-Manager")
+
+    required_comfy_files = [
+        comfy_root / "nodes.py",
+        comfy_root / "comfy" / "__init__.py",
+    ]
+    if not any(path.exists() for path in required_comfy_files):
+        fallback_root = comfy_root.parent / f"{comfy_root.name}-download"
+        comfy_root = ensure_repo(fallback_root, "https://github.com/comfyanonymous/ComfyUI")
+
     workflow_nodes = load_workflow_nodes(args.workflow)
     builtin_nodes = gather_builtin_nodes(comfy_root)
 
@@ -442,7 +457,6 @@ def main() -> None:
         node_map_data = json.loads(node_map_path.read_text(encoding="utf-8"))
     else:
         preferred = manager_root / "node_db" / "dev" / "extension-node-map.json"
-        fallback = manager_root / "extension-node-map.json"
         if preferred.exists():
             node_map_data = json.loads(preferred.read_text(encoding="utf-8"))
             if fallback.exists():
