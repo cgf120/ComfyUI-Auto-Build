@@ -15,9 +15,14 @@ import json
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 
 GIT_CLONE_FLAGS: Tuple[str, ...] = (
@@ -45,6 +50,37 @@ class PluginPlan:
     status: str = "planned"  # planned | skipped | cloned | failed
     message: Optional[str] = None
     requirements: List[Path] = field(default_factory=list)
+
+
+@dataclass
+class RequirementRecord:
+    requirement: Requirement
+    original: str
+    source: str
+    plugin_id: str
+    file: str
+
+
+@dataclass
+class PackageAccumulator:
+    name: str
+    records: List[RequirementRecord] = field(default_factory=list)
+    extras: Set[str] = field(default_factory=set)
+    markers: List[str] = field(default_factory=list)
+    eq_versions: Set[str] = field(default_factory=set)
+    spec_parts: List[str] = field(default_factory=list)
+
+
+VERSION_OVERRIDE_GROUPS: Sequence[Dict[str, object]] = (
+    {
+        "trigger": {"tensorflow", "tf-keras"},
+        "overrides": {
+            "tensorflow": "tensorflow==2.20.0",
+            "tf-keras": "tf-keras==2.20.0",
+        },
+        "reason": "Force TensorFlow 2.20 family for Python 3.13 compatibility.",
+    },
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -267,10 +303,16 @@ def collect_requirements(
     requirements_output: Path,
     known_packages: Set[str],
     known_vcs: Set[str],
-) -> List[str]:
-    collected: List[str] = []
-    current_packages = set(known_packages)
-    current_vcs = set(known_vcs)
+) -> Tuple[List[str], Dict[str, object]]:
+    packages: Dict[str, PackageAccumulator] = {}
+    raw_lines: List[str] = []
+    raw_seen = set(known_vcs)
+    resolution_notes: Dict[str, object] = {
+        "packages": {},
+        "version_conflicts": [],
+        "overrides_applied": [],
+        "raw_requirements": [],
+    }
 
     for plan in plans:
         if plan.status not in {"cloned", "skipped"}:
@@ -280,24 +322,152 @@ def collect_requirements(
                 lines = req_file.read_text(encoding="utf-8").splitlines()
             except Exception:
                 continue
+            source_label = f"{plan.plugin_id}:{req_file.name}"
             for line in lines:
                 entry = parse_requirement_line(line)
                 if entry is None:
                     continue
                 if entry.kind == "package":
-                    if entry.key in current_packages:
+                    if entry.key in known_packages:
                         continue
-                    current_packages.add(entry.key)
-                elif entry.kind == "vcs":
-                    if entry.key in current_vcs:
+                    try:
+                        requirement = Requirement(entry.original)
+                    except InvalidRequirement:
+                        identifier = f"invalid:{entry.original.lower()}"
+                        if identifier in raw_seen:
+                            continue
+                        raw_seen.add(identifier)
+                        raw_lines.append(entry.original)
                         continue
-                    current_vcs.add(entry.key)
+
+                    normalized = requirement.name.replace("_", "-").lower()
+                    accumulator = packages.get(normalized)
+                    if accumulator is None:
+                        accumulator = PackageAccumulator(name=requirement.name)
+                        packages[normalized] = accumulator
+                    accumulator.records.append(
+                        RequirementRecord(
+                            requirement=requirement,
+                            original=entry.original,
+                            source=source_label,
+                            plugin_id=plan.plugin_id,
+                            file=str(req_file),
+                        )
+                    )
+                    accumulator.extras.update(requirement.extras)
+                    if requirement.marker:
+                        accumulator.markers.append(str(requirement.marker))
+                    for spec in requirement.specifier:
+                        spec_text = str(spec).strip()
+                        if spec_text:
+                            accumulator.spec_parts.append(spec_text)
+                        if spec.operator in {"==", "==="} and spec.version is not None:
+                            accumulator.eq_versions.add(spec.version)
                 else:
-                    identifier = f"{entry.kind}:{entry.key}"
-                    if identifier in current_vcs:
+                    identifier = entry.key if entry.kind == "vcs" else f"{entry.kind}:{entry.key}"
+                    if identifier in raw_seen:
                         continue
-                    current_vcs.add(identifier)
-                collected.append(entry.original)
+                    raw_seen.add(identifier)
+                    raw_lines.append(entry.original)
+
+    final_map: Dict[str, Dict[str, object]] = {}
+
+    for normalized_name, accumulator in packages.items():
+        if not accumulator.records:
+            continue
+
+        specifier_set = SpecifierSet(",".join(accumulator.spec_parts)) if accumulator.spec_parts else SpecifierSet()
+        selected_version: Optional[str] = None
+
+        if len(accumulator.eq_versions) > 1:
+            try:
+                sorted_versions = sorted((Version(v), v) for v in accumulator.eq_versions)
+                selected_version = sorted_versions[-1][1]
+            except InvalidVersion:
+                selected_version = sorted(accumulator.eq_versions)[-1]
+            specifier_set = SpecifierSet(f"=={selected_version}")
+            resolution_notes["version_conflicts"].append(
+                {
+                    "package": accumulator.name,
+                    "requested_versions": sorted(accumulator.eq_versions),
+                    "selected_version": selected_version,
+                }
+            )
+        elif len(accumulator.eq_versions) == 1:
+            selected_version = next(iter(accumulator.eq_versions))
+            specifier_set = SpecifierSet(f"=={selected_version}")
+
+        extras_str = ""
+        if accumulator.extras:
+            extras_str = "[" + ",".join(sorted(accumulator.extras)) + "]"
+
+        spec_str = str(specifier_set).replace(" ", "")
+        marker_str = ""
+        if accumulator.markers:
+            marker_str = " and ".join(sorted(set(accumulator.markers)))
+
+        requirement_line = accumulator.name + extras_str
+        if spec_str:
+            requirement_line += spec_str
+        if marker_str:
+            requirement_line += f" ; {marker_str}"
+
+        final_map[normalized_name] = {
+            "line": requirement_line,
+            "name": accumulator.name,
+            "sources": sorted({record.source for record in accumulator.records}),
+            "selected_version": selected_version,
+            "markers": sorted(set(accumulator.markers)),
+            "extras": sorted(accumulator.extras),
+        }
+        resolution_notes["packages"][accumulator.name] = {
+            "sources": sorted({record.source for record in accumulator.records}),
+            "selected_line": requirement_line,
+            "markers": sorted(set(accumulator.markers)),
+            "extras": sorted(accumulator.extras),
+        }
+        if selected_version is not None:
+            resolution_notes["packages"][accumulator.name]["selected_version"] = selected_version
+        if spec_str:
+            resolution_notes["packages"][accumulator.name]["specifier"] = spec_str
+
+    for override in VERSION_OVERRIDE_GROUPS:
+        trigger = override.get("trigger")
+        if not isinstance(trigger, set):
+            continue
+        if not trigger.issubset(set(final_map.keys())):
+            continue
+        overrides = override.get("overrides", {})
+        reason = override.get("reason")
+        if not isinstance(overrides, dict):
+            continue
+        for package_name, override_line in overrides.items():
+            normalized = package_name.replace("_", "-").lower()
+            previous = final_map.get(normalized, {}).get("line")
+            final_map[normalized] = {
+                "line": override_line,
+                "name": package_name,
+                "sources": final_map.get(normalized, {}).get("sources", []),
+                "override_reason": reason,
+            }
+            resolution_notes["overrides_applied"].append(
+                {
+                    "package": package_name,
+                    "override": override_line,
+                    "previous": previous,
+                    "reason": reason,
+                }
+            )
+            pkg_summary = resolution_notes["packages"].setdefault(package_name, {})
+            if "sources" not in pkg_summary:
+                pkg_summary["sources"] = final_map[normalized]["sources"]
+            pkg_summary["selected_line"] = override_line
+            pkg_summary["override_reason"] = reason
+            if previous:
+                pkg_summary["previous_line"] = previous
+
+    collected: List[str] = [final_map[key]["line"] for key in sorted(final_map)]
+    collected.extend(raw_lines)
 
     if collected:
         requirements_output.parent.mkdir(parents=True, exist_ok=True)
@@ -305,7 +475,8 @@ def collect_requirements(
     elif requirements_output.exists():
         requirements_output.unlink()
 
-    return collected
+    resolution_notes["raw_requirements"] = raw_lines
+    return collected, resolution_notes
 
 
 def write_summary(
@@ -313,6 +484,7 @@ def write_summary(
     plans: Sequence[PluginPlan],
     unresolved_nodes: Sequence[str],
     collected_requirements: Sequence[str],
+    resolution_details: Dict[str, object],
 ) -> None:
     summary = {
         "workflow_plugins": [
@@ -329,7 +501,10 @@ def write_summary(
             for plan in plans
         ],
         "unresolved_nodes": list(unresolved_nodes),
-        "collected_requirements": list(collected_requirements),
+        "requirements": {
+            "resolved": list(collected_requirements),
+            "details": resolution_details,
+        },
     }
     summary_output.parent.mkdir(parents=True, exist_ok=True)
     summary_output.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -348,7 +523,13 @@ def main() -> None:
         print("[info] 工作流未声明任何额外插件，跳过克隆。")
         if args.requirements_output.exists():
             args.requirements_output.unlink()
-        write_summary(args.summary_output, plans, unresolved_nodes, [])
+        empty_details = {
+            "packages": {},
+            "version_conflicts": [],
+            "overrides_applied": [],
+            "raw_requirements": [],
+        }
+        write_summary(args.summary_output, plans, unresolved_nodes, [], empty_details)
         return
 
     args.custom_node_root.mkdir(parents=True, exist_ok=True)
@@ -371,7 +552,12 @@ def main() -> None:
             print(f"[info] 插件 {updated.plugin_id} -> {updated.status} ({updated.slug})")
 
     known_packages, known_vcs = load_known_requirements([args.pak3, args.pak7])
-    collected_requirements = collect_requirements(processed_plans, args.requirements_output, known_packages, known_vcs)
+    collected_requirements, resolution_details = collect_requirements(
+        processed_plans,
+        args.requirements_output,
+        known_packages,
+        known_vcs,
+    )
 
     if collected_requirements:
         print(f"[info] 新增依赖 {len(collected_requirements)} 条，已写入 {args.requirements_output}")
@@ -381,7 +567,13 @@ def main() -> None:
     if unresolved_nodes:
         print(f"[warn] 未能解析以下节点: {', '.join(unresolved_nodes)}")
 
-    write_summary(args.summary_output, processed_plans, unresolved_nodes, collected_requirements)
+    write_summary(
+        args.summary_output,
+        processed_plans,
+        unresolved_nodes,
+        collected_requirements,
+        resolution_details,
+    )
 
     if missing_repos:
         print(
