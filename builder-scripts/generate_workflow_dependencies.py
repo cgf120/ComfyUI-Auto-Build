@@ -19,6 +19,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Pattern, Sequence, Set, Tuple
+from urllib.parse import urlparse
 
 
 def parse_args() -> argparse.Namespace:
@@ -203,6 +204,33 @@ def load_custom_node_catalog(manager_root: Path) -> Dict[str, Dict[str, object]]
     return catalog
 
 
+def derive_repository_from_raw(url: str) -> Optional[str]:
+    """
+    Convert raw.githubusercontent.com paths back to canonical repository URLs.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    host = parsed.netloc.lower()
+    if host not in {"raw.githubusercontent.com", "raw.github.com"}:
+        return None
+
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) < 3:
+        return None
+
+    owner, repo = segments[0], segments[1]
+    if not owner or not repo:
+        return None
+
+    return f"https://github.com/{owner}/{repo}"
+
+
 def load_extension_node_map(
     raw_data: Dict[str, object],
     custom_catalog: Dict[str, Dict[str, object]],
@@ -232,8 +260,8 @@ def load_extension_node_map(
         elif isinstance(value, dict):
             metadata = value
 
-        custom_entry = custom_catalog.get(raw_plugin_id)
         canonical_id = raw_plugin_id
+        custom_entry = custom_catalog.get(raw_plugin_id)
         if custom_entry:
             reference = custom_entry.get("reference")
             if isinstance(reference, str) and reference:
@@ -250,6 +278,29 @@ def load_extension_node_map(
             if isinstance(files, Sequence) and not isinstance(files, str):
                 combined_metadata.setdefault("files", [item for item in files if isinstance(item, str)])
         else:
+            derived_repo = derive_repository_from_raw(raw_plugin_id)
+            if derived_repo:
+                canonical_id = derived_repo
+                combined_metadata = dict(metadata)
+                combined_metadata.setdefault("derived_from", raw_plugin_id)
+            else:
+                combined_metadata = metadata
+
+        if not custom_entry and canonical_id != raw_plugin_id:
+            custom_entry = custom_catalog.get(canonical_id)
+
+        if custom_entry:
+            combined_metadata.setdefault("reference", custom_entry.get("reference"))
+            combined_metadata.setdefault("author", custom_entry.get("author"))
+            combined_metadata.setdefault("title", custom_entry.get("title"))
+            combined_metadata.setdefault("install_type", custom_entry.get("install_type"))
+            description = custom_entry.get("description")
+            if description and "description" not in combined_metadata:
+                combined_metadata["description"] = description
+            files = custom_entry.get("files")
+            if isinstance(files, Sequence) and not isinstance(files, str):
+                combined_metadata.setdefault("files", [item for item in files if isinstance(item, str)])
+        elif canonical_id == raw_plugin_id:
             combined_metadata = metadata
 
         existing_meta = plugin_metadata.get(canonical_id)
