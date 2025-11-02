@@ -161,8 +161,52 @@ def load_workflow_nodes(workflow_path: Path) -> Set[str]:
     return discovered
 
 
+def load_custom_node_catalog(manager_root: Path) -> Dict[str, Dict[str, object]]:
+    """
+    Build a mapping from any known URL (reference/files) to the corresponding
+    custom node entry described in custom-node-list.json.
+    """
+    candidates = [
+        manager_root / "node_db" / "dev" / "custom-node-list.json",
+        manager_root / "custom-node-list.json",
+    ]
+
+    catalog: Dict[str, Dict[str, object]] = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[warn] Failed to parse custom node list {path}: {exc}", file=sys.stderr)
+            continue
+
+        entries = data.get("custom_nodes")
+        if not isinstance(entries, Sequence) or isinstance(entries, str):
+            continue
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            reference = entry.get("reference")
+            if isinstance(reference, str) and reference:
+                catalog.setdefault(reference, entry)
+            files = entry.get("files")
+            if isinstance(files, Sequence) and not isinstance(files, str):
+                for candidate in files:
+                    if isinstance(candidate, str) and candidate:
+                        catalog.setdefault(candidate, entry)
+
+        # Prefer the first successfully parsed file
+        if catalog:
+            break
+
+    return catalog
+
+
 def load_extension_node_map(
     raw_data: Dict[str, object],
+    custom_catalog: Dict[str, Dict[str, object]],
 ) -> Tuple[
     Dict[str, List[str]],
     Dict[str, Dict[str, object]],
@@ -176,7 +220,7 @@ def load_extension_node_map(
     pattern_entries: List[Tuple[Pattern[str], str]] = []
     comfy_nodes: Set[str] = set()
 
-    for plugin_id, value in raw_data.items():
+    for raw_plugin_id, value in raw_data.items():
         nodes: List[str] = []
         metadata: Dict[str, object] = {}
 
@@ -189,21 +233,47 @@ def load_extension_node_map(
         elif isinstance(value, dict):
             metadata = value
 
-        plugin_metadata[plugin_id] = metadata
+        custom_entry = custom_catalog.get(raw_plugin_id)
+        canonical_id = raw_plugin_id
+        if custom_entry:
+            reference = custom_entry.get("reference")
+            if isinstance(reference, str) and reference:
+                canonical_id = reference
+            combined_metadata = dict(metadata)
+            combined_metadata.setdefault("reference", custom_entry.get("reference"))
+            combined_metadata.setdefault("author", custom_entry.get("author"))
+            combined_metadata.setdefault("title", custom_entry.get("title"))
+            combined_metadata.setdefault("install_type", custom_entry.get("install_type"))
+            description = custom_entry.get("description")
+            if description and "description" not in combined_metadata:
+                combined_metadata["description"] = description
+            files = custom_entry.get("files")
+            if isinstance(files, Sequence) and not isinstance(files, str):
+                combined_metadata.setdefault("files", [item for item in files if isinstance(item, str)])
+        else:
+            combined_metadata = metadata
+
+        existing_meta = plugin_metadata.get(canonical_id)
+        if existing_meta:
+            merged = dict(existing_meta)
+            merged.update({k: v for k, v in combined_metadata.items() if v is not None})
+            plugin_metadata[canonical_id] = merged
+        else:
+            plugin_metadata[canonical_id] = combined_metadata
 
         for node_name in nodes:
             normalized = node_name.strip()
             if normalized:
-                node_to_plugins[normalized].append(plugin_id)
+                node_to_plugins[normalized].append(canonical_id)
 
-        if plugin_id == "https://github.com/comfyanonymous/ComfyUI":
+        if canonical_id == "https://github.com/comfyanonymous/ComfyUI":
             comfy_nodes.update(node.strip() for node in nodes if isinstance(node, str))
 
         preemptions = metadata.get("preemptions")
         if isinstance(preemptions, Sequence) and not isinstance(preemptions, str):
             for entry in preemptions:
                 if isinstance(entry, str):
-                    preemption_map[entry] = plugin_id
+                    preemption_map[entry] = canonical_id
 
         pattern = metadata.get("nodename_pattern")
         if isinstance(pattern, str) and pattern:
@@ -211,7 +281,7 @@ def load_extension_node_map(
                 compiled = re.compile(pattern)
             except re.error:  # pragma: no cover - invalid pattern in source data
                 continue
-            pattern_entries.append((compiled, plugin_id))
+            pattern_entries.append((compiled, canonical_id))
 
     return node_to_plugins, plugin_metadata, preemption_map, pattern_entries, comfy_nodes
 
@@ -219,6 +289,7 @@ def load_extension_node_map(
 def resolve_dependencies(
     workflow_nodes: Set[str],
     builtin_nodes: Set[str],
+    builtin_patterns: Sequence[Pattern[str]],
     node_to_plugins: Dict[str, List[str]],
     plugin_metadata: Dict[str, Dict[str, object]],
     preemption_map: Dict[str, str],
@@ -229,7 +300,7 @@ def resolve_dependencies(
     unresolved: Set[str] = set()
 
     for node_name in sorted(workflow_nodes):
-        if node_name in builtin_nodes:
+        if node_name in builtin_nodes or any(pattern.search(node_name) for pattern in builtin_patterns):
             continue
         override_plugin = plugin_overrides.get(node_name)
         plugin_id: Optional[str]
@@ -276,12 +347,13 @@ def resolve_dependencies(
     return plugin_list, sorted(unresolved)
 
 
-def load_special_config(path: Optional[Path]) -> Tuple[Set[str], Dict[str, str]]:
+def load_special_config(path: Optional[Path]) -> Tuple[Set[str], List[Pattern[str]], Dict[str, str]]:
     builtin_overrides: Set[str] = set()
+    builtin_patterns: List[Pattern[str]] = []
     plugin_overrides: Dict[str, str] = {}
 
     if path is None:
-        return builtin_overrides, plugin_overrides
+        return builtin_overrides, builtin_patterns, plugin_overrides
 
     if not path.exists():
         print(f"[error] Special config not found: {path}", file=sys.stderr)
@@ -297,7 +369,11 @@ def load_special_config(path: Optional[Path]) -> Tuple[Set[str], Dict[str, str]]
     if isinstance(builtin_list, Sequence) and not isinstance(builtin_list, str):
         for item in builtin_list:
             if isinstance(item, str):
-                builtin_overrides.add(item)
+                pattern = _maybe_compile_pattern(item)
+                if pattern is None:
+                    builtin_overrides.add(item)
+                else:
+                    builtin_patterns.append(pattern)
 
     plugin_map = data.get("plugin_overrides")
     if isinstance(plugin_map, dict):
@@ -305,7 +381,19 @@ def load_special_config(path: Optional[Path]) -> Tuple[Set[str], Dict[str, str]]
             if isinstance(node_name, str) and isinstance(plugin_id, str):
                 plugin_overrides[node_name] = plugin_id
 
-    return builtin_overrides, plugin_overrides
+    return builtin_overrides, builtin_patterns, plugin_overrides
+
+
+def _maybe_compile_pattern(value: str) -> Optional[Pattern[str]]:
+    """Attempt to detect and compile regex-like builtin node declarations."""
+    regex_tokens = set(".*+?[](){}|^$")
+    if not any(token in value for token in regex_tokens):
+        return None
+    try:
+        return re.compile(value)
+    except re.error:
+        print(f"[warn] 无法解析内置节点正则: {value}", file=sys.stderr)
+        return None
 
 
 def ensure_repo(path: Path, repo_url: str) -> Path:
@@ -374,7 +462,9 @@ def main() -> None:
         print("[error] Failed to load extension-node-map.json data.", file=sys.stderr)
         sys.exit(1)
 
-    builtin_overrides, plugin_overrides = load_special_config(args.special_config)
+    builtin_overrides, builtin_patterns, plugin_overrides = load_special_config(args.special_config)
+
+    custom_catalog = load_custom_node_catalog(manager_root)
 
     (
         node_to_plugins,
@@ -382,13 +472,14 @@ def main() -> None:
         preemption_map,
         pattern_entries,
         comfy_nodes,
-    ) = load_extension_node_map(node_map_data)
+    ) = load_extension_node_map(node_map_data, custom_catalog)
 
     builtin_nodes.update(comfy_nodes)
     builtin_nodes.update(builtin_overrides)
     plugin_list, unresolved_nodes = resolve_dependencies(
         workflow_nodes,
         builtin_nodes,
+        builtin_patterns,
         node_to_plugins,
         plugin_metadata,
         preemption_map,
