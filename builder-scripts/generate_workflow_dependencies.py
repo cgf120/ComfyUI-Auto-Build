@@ -457,17 +457,18 @@ def main() -> None:
         node_map_data = json.loads(node_map_path.read_text(encoding="utf-8"))
     else:
         preferred = manager_root / "node_db" / "dev" / "extension-node-map.json"
+        fallback_path = manager_root / "extension-node-map.json"
         if preferred.exists():
             node_map_data = json.loads(preferred.read_text(encoding="utf-8"))
-            if fallback.exists():
-                fallback_data = json.loads(fallback.read_text(encoding="utf-8"))
+            if fallback_path.exists():
+                fallback_data = json.loads(fallback_path.read_text(encoding="utf-8"))
                 for key, value in fallback_data.items():
                     node_map_data.setdefault(key, value)
-        elif fallback.exists():
-            node_map_data = json.loads(fallback.read_text(encoding="utf-8"))
+        elif fallback_path.exists():
+            node_map_data = json.loads(fallback_path.read_text(encoding="utf-8"))
         else:
             print(
-                f"[error] Could not find extension-node-map.json at either {preferred} or {fallback}",
+                f"[error] Could not find extension-node-map.json at either {preferred} or {fallback_path}",
                 file=sys.stderr,
             )
             sys.exit(1)
