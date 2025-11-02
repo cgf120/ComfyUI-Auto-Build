@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
         "--node-map",
         type=Path,
         default=None,
-        help="Optional path to extension-node-map.json (defaults to node_db/dev/extension-node-map.json if present).",
+        help="Optional path to extension-node-map.json (defaults to node_db/new/extension-node-map.json if present).",
     )
     parser.add_argument(
         "--special-config",
@@ -167,8 +167,7 @@ def load_custom_node_catalog(manager_root: Path) -> Dict[str, Dict[str, object]]
     custom node entry described in custom-node-list.json.
     """
     candidates = [
-        manager_root / "node_db" / "dev" / "custom-node-list.json",
-        manager_root / "custom-node-list.json",
+        manager_root / "node_db" / "new" / "custom-node-list.json",
     ]
 
     catalog: Dict[str, Dict[str, object]] = {}
@@ -431,7 +430,7 @@ def main() -> None:
     manager_root = ensure_repo(manager_root, "https://github.com/Comfy-Org/ComfyUI-Manager") if not manager_root.exists() else manager_root
 
     required_manager_files = [
-        manager_root / "node_db" / "dev" / "extension-node-map.json",
+        manager_root / "node_db" / "new" / "extension-node-map.json",
     ]
     if not any(path.exists() for path in required_manager_files):
         fallback_root = manager_root.parent / f"{manager_root.name}-download"
@@ -456,7 +455,7 @@ def main() -> None:
             sys.exit(1)
         node_map_data = json.loads(node_map_path.read_text(encoding="utf-8"))
     else:
-        preferred = manager_root / "node_db" / "dev" / "extension-node-map.json"
+        preferred = manager_root / "node_db" / "new" / "extension-node-map.json"
         fallback_path = manager_root / "extension-node-map.json"
         if preferred.exists():
             node_map_data = json.loads(preferred.read_text(encoding="utf-8"))
