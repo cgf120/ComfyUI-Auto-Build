@@ -38,6 +38,28 @@ https://podman-desktop.io/docs/podman/gpu[GPU enabled].
 ** WSL2 users please note that NTFS ⇆ ext4 “translation” is very slow (down to <100MiB/s), so you may want to use an in-WSL folder (or Docker volume) to store ComfyUI.
 
 
+## 基于工作流的自定义构建
+
+1. 在 ComfyUI 中导出目标工作流 JSON，并将文件放入仓库（示例路径：`builder-scripts/workflows/my_workflow.json`）。
+2. 执行构建命令：
++
+[source,sh]
+----
+docker build \
+  --build-arg WORKFLOW_JSON=builder-scripts/workflows/my_workflow.json \
+  -t comfyui-workflow .
+----
++
+构建过程中会解析工作流所需的自定义节点，克隆对应仓库并收集新增的 Python 依赖。
+3. 构建结束后，工作流处理摘要写入镜像内的 `/builder-scripts/workflow-summary.json`，构建日志也会输出克隆结果与未解析节点。按需依赖写入 `/builder-scripts/workflow-requirements.txt` 并在构建阶段自动安装。
+4. 未提供 `WORKFLOW_JSON` 时，镜像保持默认的 ComfyUI + ComfyUI-Manager，只安装 `pak3.txt` 与 `pak7.txt` 中的基础依赖。
+
+依赖文件角色：
+
+* `pak3.txt`：镜像的核心依赖。
+* `pak7.txt`：特殊 git / VCS 依赖（如 insightface 等）。
+* `workflow-requirements.txt`：由工作流解析生成的新增依赖，已自动排除 `pak3` 与 `pak7` 中的条目。
+
 ## Usage
 
 ### Run with Docker

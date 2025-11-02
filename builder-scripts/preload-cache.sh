@@ -28,6 +28,28 @@ cat <<EOF > /default-comfyui-bundle/ComfyUI/user/default/ComfyUI-Manager/config.
 use_uv = False
 EOF
 
+WORKFLOW_DEPS_JSON="${WORKFLOW_DEPS_JSON:-}"
+WORKFLOW_REQUIREMENTS_TXT="${WORKFLOW_REQUIREMENTS_TXT:-/builder-scripts/workflow-requirements.txt}"
+WORKFLOW_SUMMARY_JSON="${WORKFLOW_SUMMARY_JSON:-/builder-scripts/workflow-summary.json}"
+
+if [ -n "${WORKFLOW_DEPS_JSON}" ] && [ -f "${WORKFLOW_DEPS_JSON}" ]; then
+    echo "########################################"
+    echo "[INFO] 按工作流解析自定义节点..."
+    echo "########################################"
+    python3 /builder-scripts/apply_workflow_custom_nodes.py \
+        --deps "${WORKFLOW_DEPS_JSON}" \
+        --custom-node-root /default-comfyui-bundle/ComfyUI/custom_nodes \
+        --requirements-output "${WORKFLOW_REQUIREMENTS_TXT}" \
+        --summary-output "${WORKFLOW_SUMMARY_JSON}" \
+        --pak3 /builder-scripts/pak3.txt \
+        --pak7 /builder-scripts/pak7.txt
+else
+    echo "[INFO] 未检测到工作流依赖文件，保持默认插件集合。"
+    if [ -f "${WORKFLOW_REQUIREMENTS_TXT}" ]; then
+        rm -f "${WORKFLOW_REQUIREMENTS_TXT}"
+    fi
+fi
+
 echo "########################################"
 echo "[INFO] Downloading Models..."
 echo "########################################"

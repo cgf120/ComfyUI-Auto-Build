@@ -207,13 +207,41 @@ ${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # Deps for ComfyUI & custom nodes
 COPY builder-scripts/.  /builder-scripts/
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install \
-        -r /builder-scripts/pak3.txt
+ARG WORKFLOW_JSON=""
+ENV WORKFLOW_JSON_SOURCE="${WORKFLOW_JSON}"
+ENV WORKFLOW_DEPS_JSON="/tmp/workflow-deps.json"
+ENV WORKFLOW_REQUIREMENTS_TXT="/builder-scripts/workflow-requirements.txt"
+ENV WORKFLOW_SUMMARY_JSON="/builder-scripts/workflow-summary.json"
+
+RUN if [ -n "${WORKFLOW_JSON_SOURCE}" ]; then \
+        case "${WORKFLOW_JSON_SOURCE}" in \
+            /*) \
+                echo "[error] WORKFLOW_JSON 必须指向构建上下文内的相对路径，例如 builder-scripts/workflows/foo.json"; \
+                exit 1; \
+                ;; \
+        esac; \
+        if [ -f "${WORKFLOW_JSON_SOURCE}" ]; then \
+            WORKFLOW_PATH="${WORKFLOW_JSON_SOURCE}"; \
+        elif [ -f "/builder-scripts/${WORKFLOW_JSON_SOURCE}" ]; then \
+            WORKFLOW_PATH="/builder-scripts/${WORKFLOW_JSON_SOURCE}"; \
+        elif [ -f "/${WORKFLOW_JSON_SOURCE}" ]; then \
+            WORKFLOW_PATH="/${WORKFLOW_JSON_SOURCE}"; \
+        else \
+            echo "[error] 未找到工作流文件: ${WORKFLOW_JSON_SOURCE}" >&2; \
+            exit 1; \
+        fi; \
+        cp "${WORKFLOW_PATH}" /tmp/workflow.json; \
+        python3 /builder-scripts/generate_workflow_dependencies.py \
+            --workflow /tmp/workflow.json \
+            --special-config /builder-scripts/special-node-overrides.json \
+            --output "${WORKFLOW_DEPS_JSON}"; \
+    else \
+        echo "[INFO] 未提供 WORKFLOW_JSON，跳过工作流依赖解析。"; \
+    fi
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install \
-        -r /builder-scripts/pak5.txt
+        -r /builder-scripts/pak3.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install \
@@ -232,6 +260,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         -r '/default-comfyui-bundle/ComfyUI/requirements.txt' \
         -r '/default-comfyui-bundle/ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt' \
     && pip list
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ -f /builder-scripts/workflow-requirements.txt ]; then \
+        pip install -r /builder-scripts/workflow-requirements.txt; \
+    else \
+        echo "[INFO] 未检测到 workflow-requirements.txt，跳过按需依赖。"; \
+    fi
 
 ################################################################################
 
