@@ -24,6 +24,8 @@ scipy
 timm
 torchmetrics
 transformers
+tensorflow==2.20.0
+tf-keras==2.20.0
 
 # Hand-picks
 # For smZNodes

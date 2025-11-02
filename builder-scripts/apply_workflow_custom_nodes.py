@@ -71,18 +71,6 @@ class PackageAccumulator:
     spec_parts: List[str] = field(default_factory=list)
 
 
-VERSION_OVERRIDE_GROUPS: Sequence[Dict[str, object]] = (
-    {
-        "trigger": {"tensorflow", "tf-keras"},
-        "overrides": {
-            "tensorflow": "tensorflow==2.20.0",
-            "tf-keras": "tf-keras==2.20.0",
-        },
-        "reason": "Force TensorFlow 2.20 family for Python 3.13 compatibility.",
-    },
-)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Clone workflow-required custom nodes and gather requirements."
@@ -310,7 +298,6 @@ def collect_requirements(
     resolution_notes: Dict[str, object] = {
         "packages": {},
         "version_conflicts": [],
-        "overrides_applied": [],
         "raw_requirements": [],
     }
 
@@ -431,41 +418,6 @@ def collect_requirements(
         if spec_str:
             resolution_notes["packages"][accumulator.name]["specifier"] = spec_str
 
-    for override in VERSION_OVERRIDE_GROUPS:
-        trigger = override.get("trigger")
-        if not isinstance(trigger, set):
-            continue
-        if not trigger.issubset(set(final_map.keys())):
-            continue
-        overrides = override.get("overrides", {})
-        reason = override.get("reason")
-        if not isinstance(overrides, dict):
-            continue
-        for package_name, override_line in overrides.items():
-            normalized = package_name.replace("_", "-").lower()
-            previous = final_map.get(normalized, {}).get("line")
-            final_map[normalized] = {
-                "line": override_line,
-                "name": package_name,
-                "sources": final_map.get(normalized, {}).get("sources", []),
-                "override_reason": reason,
-            }
-            resolution_notes["overrides_applied"].append(
-                {
-                    "package": package_name,
-                    "override": override_line,
-                    "previous": previous,
-                    "reason": reason,
-                }
-            )
-            pkg_summary = resolution_notes["packages"].setdefault(package_name, {})
-            if "sources" not in pkg_summary:
-                pkg_summary["sources"] = final_map[normalized]["sources"]
-            pkg_summary["selected_line"] = override_line
-            pkg_summary["override_reason"] = reason
-            if previous:
-                pkg_summary["previous_line"] = previous
-
     collected: List[str] = [final_map[key]["line"] for key in sorted(final_map)]
     collected.extend(raw_lines)
 
@@ -526,7 +478,6 @@ def main() -> None:
         empty_details = {
             "packages": {},
             "version_conflicts": [],
-            "overrides_applied": [],
             "raw_requirements": [],
         }
         write_summary(args.summary_output, plans, unresolved_nodes, [], empty_details)
