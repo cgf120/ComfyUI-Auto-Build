@@ -220,10 +220,12 @@ RUN if [ -n "${WORKFLOW_JSON_SOURCE}" ]; then \
                 exit 1; \
                 ;; \
         esac; \
-        if [ -f "${WORKFLOW_JSON_SOURCE}" ]; then \
-            WORKFLOW_PATH="${WORKFLOW_JSON_SOURCE}"; \
-        elif [ -f "/builder-scripts/${WORKFLOW_JSON_SOURCE}" ]; then \
-            WORKFLOW_PATH="/builder-scripts/${WORKFLOW_JSON_SOURCE}"; \
+        CLEAN_SOURCE="${WORKFLOW_JSON_SOURCE#./}"; \
+        BUILDER_REL="${CLEAN_SOURCE#builder-scripts/}"; \
+        if [ -f "${CLEAN_SOURCE}" ]; then \
+            WORKFLOW_PATH="${CLEAN_SOURCE}"; \
+        elif [ -f "/builder-scripts/${BUILDER_REL}" ]; then \
+            WORKFLOW_PATH="/builder-scripts/${BUILDER_REL}"; \
         elif [ -f "/${WORKFLOW_JSON_SOURCE}" ]; then \
             WORKFLOW_PATH="/${WORKFLOW_JSON_SOURCE}"; \
         else \
