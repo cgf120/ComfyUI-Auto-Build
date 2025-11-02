@@ -1,0 +1,11 @@
+{
+    "builtin_nodes": [
+      "PrimitiveNode",
+      "Note"
+    ],
+    "plugin_overrides": {
+      "GetNode": "https://github.com/kijai/ComfyUI-KJNodes",
+      "SetNode": "https://github.com/kijai/ComfyUI-KJNodes"
+    }
+  }
+  
