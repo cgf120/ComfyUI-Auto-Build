@@ -383,10 +383,15 @@ def main() -> None:
 
     write_summary(args.summary_output, processed_plans, unresolved_nodes, collected_requirements)
 
-    if missing_repos or clone_failures:
+    if missing_repos:
         print(
-            f"[error] 存在 {missing_repos} 个缺少仓库地址的插件，"
-            f"{clone_failures} 个插件克隆失败，构建已中止。",
+            f"[warn] 有 {missing_repos} 个插件缺少仓库地址，已跳过克隆，请手动确认是否需要额外安装。",
+            file=sys.stderr,
+        )
+
+    if clone_failures:
+        print(
+            f"[error] 有 {clone_failures} 个插件克隆失败，构建已中止。",
             file=sys.stderr,
         )
         sys.exit(1)
