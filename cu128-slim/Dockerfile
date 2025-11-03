@@ -28,7 +28,6 @@ python312-Cython \
 python312-py-build-cmake \
 python312-matplotlib \
 python312-mpmath \
-python312-numba-devel \
 # python312-numpy \ # Numba conflicts with latest NumPy
 python312-onnx \
 python312-pandas \
