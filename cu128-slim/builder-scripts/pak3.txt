@@ -24,13 +24,15 @@ scipy
 timm
 torchmetrics
 transformers
+tensorflow==2.20.0
+tf-keras==2.20.0
 
 # Hand-picks
 # For smZNodes
 compel
 lark
 # For Frame Interpolation
-cupy-cuda12x
+cupy-cuda13x
 # For APISR
 fairscale
 # For DepthFM

@@ -1,0 +1,14 @@
+{
+    "builtin_nodes": [
+      "PrimitiveNode",
+      "Note",
+      "Markdown Note",
+      "Reroute",
+      "workflow/.*"
+    ],
+    "plugin_overrides": {
+      "GetNode": "https://github.com/kijai/ComfyUI-KJNodes",
+      "SetNode": "https://github.com/kijai/ComfyUI-KJNodes"
+    }
+  }
+  
